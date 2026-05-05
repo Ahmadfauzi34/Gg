@@ -157,4 +157,132 @@ impl AgenticTools {
             Err(e) => Err(JsValue::from_str(&format!("Invalid JSON: {e}"))),
         }
     }
+
+    /// Chunk text into overlapping segments (useful for RAG context windows)
+    #[wasm_bindgen]
+    pub fn chunk_text(&self, text: &str, chunk_size: usize, overlap: usize) -> js_sys::Array {
+        let array = js_sys::Array::new();
+        if chunk_size == 0 {
+            return array;
+        }
+
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let mut i = 0;
+
+        while i < words.len() {
+            let end = std::cmp::min(i + chunk_size, words.len());
+            let chunk = words[i..end].join(" ");
+            array.push(&JsValue::from_str(&chunk));
+
+            if overlap >= chunk_size || end == words.len() {
+                break;
+            }
+            i += chunk_size - overlap;
+        }
+
+        array
+    }
+
+    /// Calculate Cosine Similarity between two float arrays (for evaluating embeddings)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the two arrays have different lengths or if the vectors are empty.
+    #[wasm_bindgen]
+    pub fn cosine_similarity(&self, vec_a: &[f32], vec_b: &[f32]) -> Result<f32, JsValue> {
+        if vec_a.len() != vec_b.len() {
+            return Err(JsValue::from_str("Vectors must have the same length"));
+        }
+        if vec_a.is_empty() {
+            return Err(JsValue::from_str("Vectors cannot be empty"));
+        }
+
+        let mut dot_product = 0.0;
+        let mut norm_a = 0.0;
+        let mut norm_b = 0.0;
+
+        for (a, b) in vec_a.iter().zip(vec_b.iter()) {
+            dot_product += a * b;
+            norm_a += a * a;
+            norm_b += b * b;
+        }
+
+        if norm_a == 0.0 || norm_b == 0.0 {
+            return Ok(0.0);
+        }
+
+        Ok(dot_product / (norm_a.sqrt() * norm_b.sqrt()))
+    }
+
+    /// Mask Personal Identifiable Information (Emails and basic phone formats)
+    ///
+    /// # Errors
+    ///
+    /// Will return an error if the underlying regex expression fails to compile.
+    #[wasm_bindgen]
+    pub fn mask_pii(&self, text: &str) -> Result<String, JsValue> {
+        let email_re = Regex::new(r"([a-zA-Z0-9._%+-]+)@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+            .map_err(|e| JsValue::from_str(&format!("Regex error: {e}")))?;
+
+        let mut masked = email_re.replace_all(text, "[EMAIL REDACTED]").to_string();
+
+        let phone_re = Regex::new(r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
+            .map_err(|e| JsValue::from_str(&format!("Regex error: {e}")))?;
+
+        masked = phone_re.replace_all(&masked, "[PHONE REDACTED]").to_string();
+
+        Ok(masked)
+    }
+
+    /// Strip HTML tags from a string to get raw text
+    #[wasm_bindgen]
+    pub fn strip_html(&self, html: &str) -> String {
+        let mut result = String::with_capacity(html.len());
+        let mut in_tag = false;
+
+        for c in html.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => result.push(c),
+                _ => {}
+            }
+        }
+
+        result.trim().to_string()
+    }
+
+    /// Format a prompt template using variables from a JSON string
+    /// Replace `{{key}}` with the corresponding value in the JSON object.
+    ///
+    /// # Errors
+    ///
+    /// Will return an error if the variables string is not valid JSON,
+    /// or if the parsed JSON is not an object.
+    #[wasm_bindgen]
+    pub fn format_prompt(&self, template: &str, variables_json: &str) -> Result<String, JsValue> {
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(variables_json);
+
+        match parsed {
+            Ok(serde_json::Value::Object(map)) => {
+                let mut result = template.to_string();
+
+                for (key, value) in &map {
+                    let placeholder = format!("{{{{{key}}}}}");
+                    let val_str = match value {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => value.to_string(),
+                    };
+
+                    result = result.replace(&placeholder, &val_str);
+                }
+
+                Ok(result)
+            },
+            Ok(_) => Err(JsValue::from_str("Variables JSON must be an object")),
+            Err(e) => Err(JsValue::from_str(&format!("Invalid JSON: {e}"))),
+        }
+    }
 }
