@@ -32,3 +32,31 @@ console.log('Base64 Decoded:', decoded);
 const jsonStr = '{"name": "Agent", "version": "1.0", "active": true}';
 const keys = tools.extract_json_keys(jsonStr);
 console.log('JSON Keys:', keys);
+
+console.log('\n--- New Agentic Framework Tools ---');
+
+// Test Chunking
+const longText = "This is a long document that we might want to split into smaller chunks so that our agent can process it easily within context windows.";
+console.log('Text Chunks (size 5, overlap 2):', tools.chunk_text(longText, 5, 2));
+
+// Test Cosine Similarity
+const vecA = new Float32Array([1.0, 0.5, 0.1]);
+const vecB = new Float32Array([0.9, 0.4, 0.2]);
+console.log('Cosine Similarity:', tools.cosine_similarity(vecA, vecB));
+
+// Test PII Masking
+const piiText = "Contact me at jules@example.com or call +1-800-555-0199 for more details.";
+console.log('Masked PII:', tools.mask_pii(piiText));
+
+// Test Strip HTML
+const htmlText = "<div><p>Hello <b>World</b>!</p><script>alert('xss');</script></div>";
+console.log('Stripped HTML:', tools.strip_html(htmlText));
+
+// Test Format Prompt
+const template = "You are a {{role}}. Your goal is to {{action}} the user's request. Confidence limit: {{confidence}}.";
+const vars = JSON.stringify({
+    role: "Helpful Assistant",
+    action: "resolve",
+    confidence: 0.95
+});
+console.log('Formatted Prompt:', tools.format_prompt(template, vars));
