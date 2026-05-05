@@ -1,10 +1,54 @@
+#![cfg_attr(
+    not(test),
+    warn(
+        clippy::all,
+        clippy::pedantic,
+        clippy::cargo,
+    )
+)]
+
+// ==========================================
+// ⛔ STRICT DENY (Keamanan & Anti-Mangkir)
+// ==========================================
+#![cfg_attr(not(test), deny(
+    clippy::correctness,
+    clippy::suspicious,
+    clippy::unwrap_used,   // Wajib handle error (jangan pakai panics)
+    clippy::expect_used,   // Sama seperti unwrap
+    clippy::todo,          // Cegah AI/Developer meninggalkan placeholder
+    clippy::unimplemented, // Cegah fungsi kosong masuk ke production
+))]
+
+// ==========================================
+// 🚧 TEMPORARY ALLOW (Tersisa Prioritas Merah & Struktural)
+// ==========================================
+#![allow(
+    clippy::suboptimal_flops,      // 🔴 Paling tinggi: tensor math (Belum dioptimasi)
+
+    // ⚠️ STRUKTURAL: Dipertahankan agar AI tidak merusak arsitektur hot-path SoA
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+)]
+
+// ==========================================
+// 🛡️ PERMANENT ALLOW (Domain Tensor)
+// ==========================================
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::must_use_candidate,
+
+    // [⬡ Carbo] FHRR: i64→f32 cast intentional untuk AVX2 256-bit alignment
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+)]
+
 use wasm_bindgen::prelude::*;
-use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
 use regex::Regex;
 use base64::{Engine as _, engine::general_purpose};
 
 #[wasm_bindgen]
+#[derive(Default)]
 pub struct AgenticTools {
     // Internal state can be added here
 }
@@ -17,16 +61,22 @@ impl AgenticTools {
     }
 
     /// Extract URLs from text
+    ///
+    /// # Errors
+    ///
+    /// Will return an error if the underlying regex expression fails to compile.
     #[wasm_bindgen]
-    pub fn extract_urls(&self, text: &str) -> js_sys::Array {
-        let re = Regex::new(r"https?://[^\s]+").unwrap();
+    pub fn extract_urls(&self, text: &str) -> Result<js_sys::Array, JsValue> {
+        let re = Regex::new(r"https?://[^\s]+")
+            .map_err(|e| JsValue::from_str(&format!("Regex compilation error: {e}")))?;
+
         let array = js_sys::Array::new();
 
         for cap in re.captures_iter(text) {
             array.push(&JsValue::from_str(&cap[0]));
         }
 
-        array
+        Ok(array)
     }
 
     /// Analyze text sentiment (basic dictionary-based approach)
@@ -46,12 +96,10 @@ impl AgenticTools {
             }
         }
 
-        if score > 0 {
-            "positive".to_string()
-        } else if score < 0 {
-            "negative".to_string()
-        } else {
-            "neutral".to_string()
+        match score.cmp(&0) {
+            std::cmp::Ordering::Greater => "positive".to_string(),
+            std::cmp::Ordering::Less => "negative".to_string(),
+            std::cmp::Ordering::Equal => "neutral".to_string(),
         }
     }
 
@@ -71,18 +119,28 @@ impl AgenticTools {
     }
 
     /// Decode Base64 to text
+    ///
+    /// # Errors
+    ///
+    /// Will return an error if the input is not a valid base64 sequence,
+    /// or if the decoded bytes do not form a valid UTF-8 string.
     #[wasm_bindgen]
     pub fn base64_decode(&self, encoded: &str) -> Result<String, JsValue> {
         match general_purpose::STANDARD.decode(encoded) {
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(string) => Ok(string),
-                Err(e) => Err(JsValue::from_str(&format!("Invalid UTF-8 sequence: {}", e))),
+                Err(e) => Err(JsValue::from_str(&format!("Invalid UTF-8 sequence: {e}"))),
             },
-            Err(e) => Err(JsValue::from_str(&format!("Invalid base64 string: {}", e))),
+            Err(e) => Err(JsValue::from_str(&format!("Invalid base64 string: {e}"))),
         }
     }
 
     /// Parse a JSON string and extract keys
+    ///
+    /// # Errors
+    ///
+    /// Will return an error if the input string is not a valid JSON string,
+    /// or if the parsed JSON is not an object.
     #[wasm_bindgen]
     pub fn extract_json_keys(&self, json_str: &str) -> Result<js_sys::Array, JsValue> {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(json_str);
@@ -96,7 +154,7 @@ impl AgenticTools {
                 Ok(array)
             },
             Ok(_) => Err(JsValue::from_str("JSON is not an object")),
-            Err(e) => Err(JsValue::from_str(&format!("Invalid JSON: {}", e))),
+            Err(e) => Err(JsValue::from_str(&format!("Invalid JSON: {e}"))),
         }
     }
 }
