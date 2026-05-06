@@ -60,3 +60,21 @@ const vars = JSON.stringify({
     confidence: 0.95
 });
 console.log('Formatted Prompt:', tools.format_prompt(template, vars));
+
+console.log('\n--- Tool Manager Search Test ---');
+const { ToolManager } = require('./pkg/agentic_tools_wasm.js');
+
+const router = new ToolManager();
+router.set_threshold(0.5);
+
+const q1 = "Coba hitung ini ya...";
+console.log(`Tools for query "${q1}":`, router.search_tools(q1));
+
+const q2 = "bagaimana ramalan cuaca hari ini?";
+console.log(`Tools for query "${q2}":`, router.search_tools(q2));
+
+const q3 = "tolong cari di web tentang rust";
+console.log(`Tools for query "${q3}":`, router.search_tools(q3));
+
+const q4 = "jam berapa sekarang di sana?";
+console.log(`Tools for query "${q4}":`, router.search_tools(q4));
