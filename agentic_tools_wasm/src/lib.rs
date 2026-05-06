@@ -4,6 +4,8 @@
         clippy::all,
         clippy::pedantic,
         clippy::cargo,
+        clippy::perf,
+        clippy::complexity,
     )
 )]
 
@@ -36,7 +38,11 @@
 // Deklarasikan modul yang kita pecah
 mod agentic_tools;
 mod tool_manager;
+mod local_memory;
+mod gatekeeper;
 
 // Re-export agar bisa diakses langsung oleh Javascript/WASM
 pub use agentic_tools::AgenticTools;
 pub use tool_manager::ToolManager;
+pub use local_memory::LocalMemoryManager;
+pub use gatekeeper::Gatekeeper;

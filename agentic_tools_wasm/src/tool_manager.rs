@@ -277,6 +277,8 @@ impl Default for ToolManager {
 // SIMD & Fallback Functions (Bebas Class)
 // ============================================================
 
+/// SIMD128-accelerated token frequency counting for BM25 sparse scoring.
+/// Note: SIMD accelerates the O(n*m) frequency count phase, not the BM25 formula itself.
 #[inline]
 #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
 fn count_token_freq_multi(doc: &[u16], query: &[u16], out: &mut [f32]) {
@@ -288,6 +290,8 @@ fn count_token_freq_multi(doc: &[u16], query: &[u16], out: &mut [f32]) {
     }
 }
 
+/// SIMD128-accelerated token frequency counting for BM25 sparse scoring.
+/// Note: SIMD accelerates the O(n*m) frequency count phase, not the BM25 formula itself.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[inline]
 fn count_token_freq_multi(doc: &[u16], query: &[u16], out: &mut [f32]) {

@@ -78,3 +78,43 @@ console.log(`Tools for query "${q3}":`, router.search_tools(q3));
 
 const q4 = "jam berapa sekarang di sana?";
 console.log(`Tools for query "${q4}":`, router.search_tools(q4));
+
+
+console.log('\n--- Gatekeeper Test ---');
+const { Gatekeeper } = require('./pkg/agentic_tools_wasm.js');
+const gate = new Gatekeeper();
+
+// Test sanitize prompt
+const rawPrompt = "Hello\t\r\n\x00World!";
+console.log('Sanitized Prompt:', gate.sanitize_prompt_input(rawPrompt));
+
+// Test context truncation
+const longContext = "The quick brown fox jumps over the lazy dog";
+console.log('Truncated (15 chars):', gate.safe_truncate_context(longContext, 15));
+
+// Test validate LLM output
+const validJSON = "```json\n{\"action\": \"click\", \"target\": \"btn\"}\n```";
+try {
+    console.log('Validated JSON:', gate.validate_llm_output(validJSON, ["action"]));
+} catch (e) {
+    console.error('Validation failed unexpectedly:', e);
+}
+
+const invalidJSON = "```json\n{\"target\": \"btn\"}\n```";
+try {
+    gate.validate_llm_output(invalidJSON, ["action"]);
+    console.error('Validation should have failed for missing key!');
+} catch (e) {
+    console.log('Validation correctly rejected missing key:', e);
+}
+
+console.log('\n--- Local Memory Manager Test ---');
+const { LocalMemoryManager } = require('./pkg/agentic_tools_wasm.js');
+const mem = new LocalMemoryManager();
+
+try {
+    // This will fail in Node.js because window is not defined. We just want to ensure it handles the missing browser environment safely.
+    mem.save_memory("key", "val");
+} catch(e) {
+    console.log("Memory properly threw error in Node environment:", e);
+}
