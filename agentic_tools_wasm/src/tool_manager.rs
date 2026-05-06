@@ -60,6 +60,9 @@ impl ToolManager {
         manager.add_tool("get_time", &["waktu", "jam", "hari", "tanggal", "time", "clock"]);
         manager.add_tool("search_web", &["cari", "google", "browser", "internet", "search", "web"]);
         manager.add_tool("calculator", &["hitung", "kalkulator", "math", "tambah", "kurang", "calculator"]);
+        manager.add_tool("text_stats", &["statistik", "teks", "kata", "karakter", "kalimat", "paragraf", "text", "stats", "count", "analyze"]);
+        manager.add_tool("detect_language", &["deteksi", "bahasa", "language", "identify", "indo", "english", "detect"]);
+        manager.add_tool("csv_to_json", &["csv", "json", "konversi", "tabel", "convert", "table", "parse"]);
 
         manager
     }

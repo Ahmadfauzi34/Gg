@@ -12,6 +12,7 @@ static EMAIL_RE: OnceLock<Regex> = OnceLock::new();
 static PHONE_RE: OnceLock<Regex> = OnceLock::new();
 static CODE_BLOCK_RE: OnceLock<Regex> = OnceLock::new();
 static VALID_EMAIL_RE: OnceLock<Regex> = OnceLock::new();
+static SENTENCE_RE: OnceLock<Regex> = OnceLock::new();
 
 fn get_or_init_regex<'a>(lock: &'a OnceLock<Regex>, pattern: &'static str) -> Result<&'a Regex, JsValue> {
     if let Some(re) = lock.get() {
@@ -432,4 +433,167 @@ impl AgenticTools {
         let word_count = text.split_whitespace().count() as f32;
         (word_count / 200.0).max(0.0)
     }
+
+    /// Return text statistics as a JSON string.
+    ///
+    /// Fields: `words`, `chars`, `chars_no_spaces`, `sentences`, `paragraphs`.
+    ///
+    /// # Errors
+    /// Returns an error if the sentence-split regex fails to compile.
+    #[wasm_bindgen]
+    pub fn text_stats(&self, text: &str) -> Result<String, JsValue> {
+        let words = text.split_whitespace().count();
+        let chars = text.chars().count();
+        let chars_no_spaces = text.chars().filter(|c| !c.is_whitespace()).count();
+
+        let sentence_re = get_or_init_regex(
+            &SENTENCE_RE,
+            r"[^.!?\n]+[.!?]+"
+        )?;
+        let sentences = sentence_re.find_iter(text).count().max(
+            usize::from(!text.trim().is_empty())
+        );
+
+        let paragraphs = text
+            .split("\n\n")
+            .filter(|p| !p.trim().is_empty())
+            .count();
+
+        let json = format!(
+            r#"{{"words":{words},"chars":{chars},"chars_no_spaces":{chars_no_spaces},"sentences":{sentences},"paragraphs":{paragraphs}}}"#
+        );
+        Ok(json)
+    }
+
+    /// Detect language using keyword heuristics.
+    ///
+    /// Returns `"id"` (Indonesian), `"en"` (English), or `"unknown"`.
+    #[wasm_bindgen]
+    #[must_use]
+    pub fn detect_language(&self, text: &str) -> String {
+        // Stopword lists — common, high-frequency words per language
+        const ID_WORDS: &[&str] = &[
+            "yang", "dan", "di", "ini", "itu", "dengan", "untuk", "tidak",
+            "ada", "dari", "ke", "pada", "adalah", "juga", "sudah", "saya",
+            "akan", "bisa", "atau", "kami", "kamu", "mereka", "anda",
+        ];
+        const EN_WORDS: &[&str] = &[
+            "the", "and", "is", "in", "it", "of", "to", "that", "this",
+            "was", "for", "on", "are", "with", "he", "she", "they", "we",
+            "you", "have", "from", "not", "but", "what", "can", "been",
+        ];
+
+        let lower = text.to_lowercase();
+
+        let mut id_score: u32 = 0;
+        let mut en_score: u32 = 0;
+
+        for word in lower.split_whitespace() {
+            let w = word.trim_matches(|c: char| !c.is_alphabetic());
+            if ID_WORDS.contains(&w) {
+                id_score += 1;
+            }
+            if EN_WORDS.contains(&w) {
+                en_score += 1;
+            }
+        }
+
+        match id_score.cmp(&en_score) {
+            std::cmp::Ordering::Greater => "id".to_string(),
+            std::cmp::Ordering::Less    => "en".to_string(),
+            std::cmp::Ordering::Equal   => {
+                if id_score == 0 { "unknown".to_string() } else { "id".to_string() }
+            }
+        }
+    }
+
+    /// Parse a CSV string into a JSON array of objects.
+    ///
+    /// - First row is treated as the header.
+    /// - Fields may be optionally quoted with `"`.
+    /// - Empty input returns an empty JSON array `[]`.
+    ///
+    /// # Errors
+    /// Returns an error if the resulting JSON cannot be serialised.
+    #[wasm_bindgen]
+    pub fn csv_to_json(&self, csv: &str) -> Result<String, JsValue> {
+        let mut lines = csv.lines().filter(|l| !l.trim().is_empty());
+
+        let Some(header_line) = lines.next() else { return Ok("[]".to_string()) };
+
+        let headers: Vec<&str> = parse_csv_row(header_line);
+
+        let mut rows: Vec<serde_json::Value> = Vec::new();
+
+        for line in lines {
+            let fields = parse_csv_row(line);
+            let mut map = serde_json::Map::new();
+            for (i, header) in headers.iter().enumerate() {
+                let value = fields.get(i).copied().unwrap_or("");
+                map.insert(
+                    (*header).to_string(),
+                    serde_json::Value::String(value.to_string()),
+                );
+            }
+            rows.push(serde_json::Value::Object(map));
+        }
+
+        serde_json::to_string(&rows)
+            .map_err(|e| JsValue::from_str(&format!("Serialization error: {e}")))
+    }
+}
+
+// ============================================================
+// CSV HELPERS (free function, not exposed to WASM)
+// ============================================================
+
+/// Parse one CSV row, respecting double-quoted fields.
+fn parse_csv_row(line: &str) -> Vec<&str> {
+    let mut fields = Vec::new();
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i <= len {
+        if i == len {
+            fields.push("");
+            break;
+        }
+        if bytes[i] == b'"' {
+            // Quoted field — find closing quote
+            let start = i + 1;
+            let mut j = start;
+            while j < len {
+                if bytes[j] == b'"' {
+                    // Peek: double-quote escape?
+                    if j + 1 < len && bytes[j + 1] == b'"' {
+                        j += 2;
+                    } else {
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            // SAFETY: start..j are within original `line` bytes (valid UTF-8 slice)
+            let field = core::str::from_utf8(&bytes[start..j]).unwrap_or("").trim();
+            fields.push(field);
+            // Skip past closing quote and comma
+            i = j + 1;
+            if i < len && bytes[i] == b',' {
+                i += 1;
+            }
+        } else {
+            // Unquoted field — scan to next comma
+            let start = i;
+            while i < len && bytes[i] != b',' {
+                i += 1;
+            }
+            let field = core::str::from_utf8(&bytes[start..i]).unwrap_or("").trim();
+            fields.push(field);
+            i += 1; // skip comma
+        }
+    }
+
+    fields
 }

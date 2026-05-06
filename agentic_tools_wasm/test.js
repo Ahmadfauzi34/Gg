@@ -118,3 +118,17 @@ try {
 } catch(e) {
     console.log("Memory properly threw error in Node environment:", e);
 }
+
+console.log('\n--- New Expansion Tools Test ---');
+const txt = "Halo, nama saya Budi. Saya senang belajar bahasa Rust! Rust sangat cepat.";
+console.log('Text Stats:', tools.text_stats(txt));
+console.log('Detect Lang (ID):', tools.detect_language(txt));
+console.log('Detect Lang (EN):', tools.detect_language("Hello, my name is John. I love learning Rust! Rust is very fast."));
+
+const csv = "name,age,city\nAlice,30,\"New York, NY\"\nBob,25,London";
+console.log('CSV to JSON:', tools.csv_to_json(csv));
+
+console.log('\n--- Updated Tool Manager ---');
+console.log(`Tools for "tolong hitung statistik kata":`, router.search_tools("tolong hitung statistik kata"));
+console.log(`Tools for "identifikasi bahasa ini":`, router.search_tools("identifikasi bahasa ini"));
+console.log(`Tools for "konversi tabel csv ke json":`, router.search_tools("konversi tabel csv ke json"));
