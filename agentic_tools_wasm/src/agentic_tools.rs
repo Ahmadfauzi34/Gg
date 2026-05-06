@@ -6,36 +6,22 @@ use std::sync::OnceLock;
 // ============================================================
 // REGEX CACHE
 // ============================================================
+
 static URL_RE: OnceLock<Regex> = OnceLock::new();
 static EMAIL_RE: OnceLock<Regex> = OnceLock::new();
 static PHONE_RE: OnceLock<Regex> = OnceLock::new();
 static CODE_BLOCK_RE: OnceLock<Regex> = OnceLock::new();
 static VALID_EMAIL_RE: OnceLock<Regex> = OnceLock::new();
 
-macro_rules! get_or_init_regex {
-    ($lock:ident, $pattern:expr) => {
-        {
-            let res: Result<&Regex, JsValue> = if let Some(re) = $lock.get() {
-                Ok(re)
-            } else {
-                match init_regex($pattern) {
-                    Ok(re) => {
-                        let _ = $lock.set(re);
-                        // Safe to unwrap because we just set it
-                        #[allow(clippy::unwrap_used)]
-                        let ret = $lock.get().unwrap();
-                        Ok(ret)
-                    },
-                    Err(e) => Err(e),
-                }
-            };
-            res
-        }
+fn get_or_init_regex<'a>(lock: &'a OnceLock<Regex>, pattern: &'static str) -> Result<&'a Regex, JsValue> {
+    if let Some(re) = lock.get() {
+        Ok(re)
+    } else {
+        let re = Regex::new(pattern)
+            .map_err(|e| JsValue::from_str(&format!("Regex error: {e}")))?;
+        let _ = lock.set(re);
+        lock.get().ok_or_else(|| JsValue::from_str("Regex init race failed"))
     }
-}
-
-fn init_regex(pattern: &str) -> Result<Regex, JsValue> {
-    Regex::new(pattern).map_err(|e| JsValue::from_str(&format!("Regex error: {e}")))
 }
 
 #[wasm_bindgen]
@@ -45,15 +31,97 @@ pub struct AgenticTools {}
 #[wasm_bindgen]
 impl AgenticTools {
     #[wasm_bindgen(constructor)]
-    pub fn new() -> AgenticTools {
-        AgenticTools {}
+    #[must_use]
+    pub fn new() -> Self { Self {} }
+
+    /// Chunk text into overlapping segments (useful for RAG context windows)
+    ///
+    /// # Errors
+    /// Returns an error if `chunk_size` is zero or overlap is >= `chunk_size`.
+    #[wasm_bindgen]
+    pub fn chunk_text(&self, text: &str, chunk_size: usize, overlap: usize) -> Result<js_sys::Array, JsValue> {
+        let array = js_sys::Array::new();
+
+        if chunk_size == 0 {
+            return Err(JsValue::from_str("chunk_size cannot be zero"));
+        }
+        if overlap >= chunk_size {
+            return Err(JsValue::from_str("overlap must be less than chunk_size"));
+        }
+
+        let words: Vec<&str> = text.split_whitespace().collect();
+        if words.is_empty() {
+            return Ok(array);
+        }
+
+        let step = chunk_size - overlap;
+        let mut i = 0;
+
+        while i < words.len() {
+            let end = std::cmp::min(i + chunk_size, words.len());
+            let chunk = words[i..end].join(" ");
+            array.push(&JsValue::from_str(&chunk));
+            i += step;
+        }
+
+        Ok(array)
     }
 
+    /// Truncate text using safe UTF-8 char counting instead of bytes
     #[wasm_bindgen]
+    #[must_use]
+    pub fn truncate_with_ellipsis(&self, text: &str, max_chars: usize) -> String {
+        let char_count = text.chars().count();
+        if char_count <= max_chars {
+            return text.to_string();
+        }
+        if max_chars <= 3 {
+            return text.chars().take(max_chars).collect();
+        }
+
+        let mut result = String::with_capacity(max_chars * 4); // worst-case UTF-8
+
+
+        for (current_chars, c) in text.chars().enumerate() {
+            if current_chars >= max_chars - 3 {
+                break;
+            }
+            result.push(c);
+        }
+        result.push_str("...");
+        result
+    }
+
+    /// Safely normalize whitespace while avoiding double allocations for preserve paragraphs mode.
+    #[wasm_bindgen]
+    #[must_use]
+    pub fn normalize_whitespace(&self, text: &str, mode: &str) -> String {
+        match mode {
+            "preserve_paragraphs" => {
+                let mut result = String::with_capacity(text.len());
+                let mut first = true;
+
+                for para in text.split("\n\n") {
+                    let words: Vec<&str> = para.split_whitespace().collect();
+                    if words.is_empty() { continue; }
+
+                    if !first { result.push_str("\n\n"); }
+                    result.push_str(&words.join(" "));
+                    first = false;
+                }
+                result
+            },
+            _ => text.split_whitespace().collect::<Vec<&str>>().join(" "),
+        }
+    }
+
+    /// Extract URLs from text
+    ///
     /// # Errors
     /// Return an error if regex fails to compile.
+    #[wasm_bindgen]
     pub fn extract_urls(&self, text: &str) -> Result<js_sys::Array, JsValue> {
-        let re = get_or_init_regex!(URL_RE, r"https?://[^\s]+")?;
+        let re = get_or_init_regex(&URL_RE, r"https?://[^\s]+")?;
         let array = js_sys::Array::new();
         for cap in re.captures_iter(text) {
             array.push(&JsValue::from_str(&cap[0]));
@@ -61,7 +129,9 @@ impl AgenticTools {
         Ok(array)
     }
 
+    /// Analyze text sentiment (naive heuristic exact-match dictionary approach, no stemming)
     #[wasm_bindgen]
+    #[must_use]
     pub fn analyze_sentiment(&self, text: &str) -> String {
         let text_lower = text.to_lowercase();
         let positive_words = ["good", "great", "excellent", "awesome", "positive", "happy", "success"];
@@ -84,6 +154,7 @@ impl AgenticTools {
     }
 
     #[wasm_bindgen]
+    #[must_use]
     pub fn markdown_to_html(&self, markdown: &str) -> String {
         let parser = pulldown_cmark::Parser::new(markdown);
         let mut html_output = String::new();
@@ -92,13 +163,16 @@ impl AgenticTools {
     }
 
     #[wasm_bindgen]
+    #[must_use]
     pub fn base64_encode(&self, text: &str) -> String {
         general_purpose::STANDARD.encode(text)
     }
 
-    #[wasm_bindgen]
+    /// Decode Base64 to text
+    ///
     /// # Errors
     /// Return an error if decoding fails.
+    #[wasm_bindgen]
     pub fn base64_decode(&self, encoded: &str) -> Result<String, JsValue> {
         match general_purpose::STANDARD.decode(encoded) {
             Ok(bytes) => match String::from_utf8(bytes) {
@@ -109,9 +183,11 @@ impl AgenticTools {
         }
     }
 
-    #[wasm_bindgen]
+    /// Parse a JSON string and extract keys
+    ///
     /// # Errors
     /// Return an error if json fails to parse.
+    #[wasm_bindgen]
     pub fn extract_json_keys(&self, json_str: &str) -> Result<js_sys::Array, JsValue> {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(json_str);
         match parsed {
@@ -127,28 +203,11 @@ impl AgenticTools {
         }
     }
 
-    #[wasm_bindgen]
-    pub fn chunk_text(&self, text: &str, chunk_size: usize, overlap: usize) -> js_sys::Array {
-        let array = js_sys::Array::new();
-        if chunk_size == 0 { return array; }
-
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let mut i = 0;
-
-        while i < words.len() {
-            let end = std::cmp::min(i + chunk_size, words.len());
-            let chunk = words[i..end].join(" ");
-            array.push(&JsValue::from_str(&chunk));
-
-            if overlap >= chunk_size || end == words.len() { break; }
-            i += chunk_size - overlap;
-        }
-        array
-    }
-
-    #[wasm_bindgen]
+    /// Calculate Cosine Similarity between two float arrays (for evaluating embeddings)
+    ///
     /// # Errors
     /// Return an error if lengths do not match or empty.
+    #[wasm_bindgen]
     pub fn cosine_similarity(&self, vec_a: &[f32], vec_b: &[f32]) -> Result<f32, JsValue> {
         if vec_a.len() != vec_b.len() {
             return Err(JsValue::from_str("Vectors must have the same length"));
@@ -171,20 +230,23 @@ impl AgenticTools {
         Ok(dot_product / (norm_a.sqrt() * norm_b.sqrt()))
     }
 
-    #[wasm_bindgen]
+    /// Mask Personal Identifiable Information (Emails and basic phone formats)
+    ///
     /// # Errors
     /// Return an error if regex fails.
+    #[wasm_bindgen]
     pub fn mask_pii(&self, text: &str) -> Result<String, JsValue> {
-        let email_re = get_or_init_regex!(EMAIL_RE, r"([a-zA-Z0-9._%+-]+)@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")?;
+        let email_re = get_or_init_regex(&EMAIL_RE, r"([a-zA-Z0-9._%+-]+)@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")?;
         let mut masked = email_re.replace_all(text, "[EMAIL REDACTED]").to_string();
 
-        let phone_re = get_or_init_regex!(PHONE_RE, r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")?;
+        let phone_re = get_or_init_regex(&PHONE_RE, r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")?;
         masked = phone_re.replace_all(&masked, "[PHONE REDACTED]").to_string();
 
         Ok(masked)
     }
 
     #[wasm_bindgen]
+    #[must_use]
     pub fn strip_html(&self, html: &str) -> String {
         let mut result = String::with_capacity(html.len());
         let mut in_tag = false;
@@ -199,9 +261,12 @@ impl AgenticTools {
         result.trim().to_string()
     }
 
-    #[wasm_bindgen]
+    /// Format a prompt template using variables from a JSON string
+    /// Replace `{{key}}` with the corresponding value in the JSON object.
+    ///
     /// # Errors
     /// Return an error if json fails to parse.
+    #[wasm_bindgen]
     pub fn format_prompt(&self, template: &str, variables_json: &str) -> Result<String, JsValue> {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(variables_json);
         match parsed {
@@ -225,6 +290,7 @@ impl AgenticTools {
     }
 
     #[wasm_bindgen]
+    #[must_use]
     pub fn count_tokens_approx(&self, text: &str, method: &str) -> u32 {
         match method {
             "word" => text.split_whitespace().count() as u32,
@@ -232,24 +298,28 @@ impl AgenticTools {
         }
     }
 
-    #[wasm_bindgen]
+    /// Extract Code blocks
+    ///
     /// # Errors
     /// Return an error if regex fails.
+    #[wasm_bindgen]
     pub fn extract_code_blocks(&self, markdown: &str) -> Result<js_sys::Array, JsValue> {
-        let re = get_or_init_regex!(CODE_BLOCK_RE, r"```(\w*)\n([\s\S]*?)```")?;
+        let re = get_or_init_regex(&CODE_BLOCK_RE, r"```(\w*)\n([\s\S]*?)```")?;
         let array = js_sys::Array::new();
         for cap in re.captures_iter(markdown) {
-            let lang = cap.get(1).map_or("", |m| m.as_str());
-            let code = cap.get(2).map_or("", |m| m.as_str());
+            let lang = cap.get(1).map_or("", |m: regex::Match| m.as_str());
+            let code = cap.get(2).map_or("", |m: regex::Match| m.as_str());
             let entry = format!("{lang}|{code}");
             array.push(&JsValue::from_str(&entry));
         }
         Ok(array)
     }
 
-    #[wasm_bindgen]
+    /// JSON Prettify
+    ///
     /// # Errors
     /// Return an error if json parsing fails.
+    #[wasm_bindgen]
     pub fn json_prettify(&self, json_str: &str) -> Result<String, JsValue> {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(json_str);
         match parsed {
@@ -261,9 +331,11 @@ impl AgenticTools {
         }
     }
 
-    #[wasm_bindgen]
+    /// JSON Minify
+    ///
     /// # Errors
     /// Return an error if json parsing fails.
+    #[wasm_bindgen]
     pub fn json_minify(&self, json_str: &str) -> Result<String, JsValue> {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(json_str);
         match parsed {
@@ -276,6 +348,7 @@ impl AgenticTools {
     }
 
     #[wasm_bindgen]
+    #[must_use]
     pub fn levenshtein_distance(&self, s1: &str, s2: &str) -> u32 {
         let len1 = s1.chars().count();
         let len2 = s2.chars().count();
@@ -297,40 +370,11 @@ impl AgenticTools {
         prev_row[len2] as u32
     }
 
-    #[wasm_bindgen]
-    pub fn normalize_whitespace(&self, text: &str, mode: &str) -> String {
-        let collapsed = text.split_whitespace().collect::<Vec<&str>>().join(" ");
-        match mode {
-            "preserve_paragraphs" => {
-                text.lines()
-                    .map(|line| line.split_whitespace().collect::<Vec<&str>>().join(" "))
-                    .filter(|line| !line.is_empty())
-                    .collect::<Vec<String>>()
-                    .join("\n\n")
-            },
-            _ => collapsed,
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn truncate_with_ellipsis(&self, text: &str, max_len: usize) -> String {
-        if text.len() <= max_len { return text.to_string(); }
-        if max_len <= 3 { return text.chars().take(max_len).collect(); }
-
-        let mut result = String::with_capacity(max_len);
-        let mut char_count = 0;
-        for c in text.chars() {
-            if char_count >= max_len - 3 { break; }
-            result.push(c);
-            char_count += c.len_utf8();
-        }
-        result.push_str("...");
-        result
-    }
-
-    #[wasm_bindgen]
+    /// Extract Domain
+    ///
     /// # Errors
     /// Return an error if extraction fails.
+    #[wasm_bindgen]
     pub fn extract_domain(&self, url: &str) -> Result<String, JsValue> {
         let trimmed = url.trim();
         let without_proto = if let Some(pos) = trimmed.find("://") {
@@ -348,8 +392,9 @@ impl AgenticTools {
     }
 
     #[wasm_bindgen]
+    #[must_use]
     pub fn is_valid_email(&self, email: &str) -> bool {
-        if let Ok(re) = get_or_init_regex!(VALID_EMAIL_RE, r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$") {
+        if let Ok(re) = get_or_init_regex(&VALID_EMAIL_RE, r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$") {
             re.is_match(email.trim())
         } else {
             false
@@ -357,6 +402,7 @@ impl AgenticTools {
     }
 
     #[wasm_bindgen]
+    #[must_use]
     pub fn slugify(&self, text: &str) -> String {
         let mut slug = String::with_capacity(text.len());
         let mut prev_dash = true;
@@ -381,6 +427,7 @@ impl AgenticTools {
     }
 
     #[wasm_bindgen]
+    #[must_use]
     pub fn estimate_reading_time(&self, text: &str) -> f32 {
         let word_count = text.split_whitespace().count() as f32;
         (word_count / 200.0).max(0.0)
